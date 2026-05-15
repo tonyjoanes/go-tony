@@ -1,0 +1,136 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  resourceGroupName: 'demo-rg'
+  location: 'eastus'
+  azureSubscriptionId: '' # Set this in pipeline settings
+  appName: 'demo-myapi-dev'
+  planName: 'demo-asp-dev'
+  serviceConnection: 'your-azure-service-connection-name'
+
+stages:
+
+# ── Stage 1: Build & publish .NET API ─────────────────────────────────────────
+- stage: Build
+  displayName: 'Build API'
+  jobs:
+  - job: BuildApi
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore'
+      inputs:
+        command: restore
+        projects: 'src/MyApi/MyApi.csproj'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build'
+      inputs:
+        command: build
+        projects: 'src/MyApi/MyApi.csproj'
+        arguments: '--configuration Release --no-restore'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish'
+      inputs:
+        command: publish
+        projects: 'src/MyApi/MyApi.csproj'
+        arguments: '--configuration Release --no-build --output $(Build.ArtifactStagingDirectory)/api'
+        zipAfterPublish: true
+
+    - publish: $(Build.ArtifactStagingDirectory)/api
+      artifact: api
+
+# ── Stage 2: Build Go health-check tool (parallel with Build) ─────────────────
+- stage: BuildGoTool
+  displayName: 'Build Go Tool'
+  dependsOn: [] # Runs in parallel with Build stage
+  jobs:
+  - job: BuildGo
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: GoTool@0
+      displayName: 'Install Go 1.23'
+      inputs:
+        version: '1.23'
+
+    - script: |
+        cd tools/azhealthcheck
+        go mod download
+        go build -o $(Build.ArtifactStagingDirectory)/azhealthcheck ./...
+      displayName: 'Build azhealthcheck binary'
+
+    - publish: $(Build.ArtifactStagingDirectory)/azhealthcheck
+      artifact: azhealthcheck
+
+# ── Stage 3: Deploy Bicep infra ───────────────────────────────────────────────
+- stage: Infra
+  displayName: 'Deploy Infrastructure'
+  dependsOn: Build
+  jobs:
+  - job: DeployBicep
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Deploy Bicep'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: $(serviceConnection)
+        subscriptionId: $(azureSubscriptionId)
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: $(resourceGroupName)
+        location: $(location)
+        templateLocation: 'Linked artifact'
+        csmFile: 'infra/main.bicep'
+        overrideParameters: >
+          -appName $(appName)
+          -planName $(planName)
+          -location $(location)
+        deploymentMode: 'Incremental'
+
+# ── Stage 4: Deploy app & run health check ────────────────────────────────────
+- stage: DeployAndCheck
+  displayName: 'Deploy App & Health Check'
+  dependsOn:
+    - Build
+    - Infra
+    - BuildGoTool
+  jobs:
+  - deployment: DeployAndHealthCheck
+    pool:
+      vmImage: ubuntu-latest
+    environment: 'azure-demo'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: api
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy API to App Service'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              appType: webAppLinux
+              appName: $(appName)
+              package: $(Pipeline.Workspace)/api/*.zip
+
+          - download: current
+            artifact: azhealthcheck
+
+          - script: |
+              chmod +x $(Pipeline.Workspace)/azhealthcheck/azhealthcheck
+              $(Pipeline.Workspace)/azhealthcheck/azhealthcheck \
+                --app-name $(appName) \
+                --resource-group $(resourceGroupName) \
+                --health-path /health \
+                --timeout 5m \
+                --interval 10s
+            displayName: 'Run health check'
+            timeoutInMinutes: 6

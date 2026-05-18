@@ -5,15 +5,15 @@ trigger:
 
 variables:
   resourceGroupName: 'demo-rg'
-  location: 'eastus'
-  azureSubscriptionId: '' # Set this in pipeline settings
+  location: 'uksouth'
+  azureSubscriptionId: '' # Set this in pipeline settings or replace with your subscription ID
   appName: 'demo-myapi-dev'
   planName: 'demo-asp-dev'
-  serviceConnection: 'your-azure-service-connection-name'
+  serviceConnection: 'MyAzureConnection'
 
 stages:
 
-# ── Stage 1: Build & publish .NET API ─────────────────────────────────────────
+# Stage 1: Build & publish .NET API
 - stage: Build
   displayName: 'Build API'
   jobs:
@@ -45,10 +45,10 @@ stages:
     - publish: $(Build.ArtifactStagingDirectory)/api
       artifact: api
 
-# ── Stage 2: Build Go health-check tool (parallel with Build) ─────────────────
+# Stage 2: Build Go health-check tool (parallel with Build)
 - stage: BuildGoTool
   displayName: 'Build Go Tool'
-  dependsOn: [] # Runs in parallel with Build stage
+  dependsOn: []
   jobs:
   - job: BuildGo
     pool:
@@ -68,7 +68,7 @@ stages:
     - publish: $(Build.ArtifactStagingDirectory)/azhealthcheck
       artifact: azhealthcheck
 
-# ── Stage 3: Deploy Bicep infra ───────────────────────────────────────────────
+# Stage 3: Deploy Bicep infra
 - stage: Infra
   displayName: 'Deploy Infrastructure'
   dependsOn: Build
@@ -88,13 +88,10 @@ stages:
         location: $(location)
         templateLocation: 'Linked artifact'
         csmFile: 'infra/main.bicep'
-        overrideParameters: >
-          -appName $(appName)
-          -planName $(planName)
-          -location $(location)
+        overrideParameters: -appName $(appName) -planName $(planName) -location $(location)
         deploymentMode: 'Incremental'
 
-# ── Stage 4: Deploy app & run health check ────────────────────────────────────
+# Stage 4: Deploy app & run health check
 - stage: DeployAndCheck
   displayName: 'Deploy App & Health Check'
   dependsOn:

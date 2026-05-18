@@ -11,14 +11,11 @@ param appName string = 'demo-myapi'
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planName
   location: location
-  kind: 'linux'
   sku: {
-    name: 'B1'
-    tier: 'Basic'
+    name: 'F1'
+    tier: 'Free'
   }
-  properties: {
-    reserved: true // required for Linux plans
-  }
+  properties: {}
 }
 
 // ── App Service ───────────────────────────────────────────────────────────────
@@ -28,7 +25,7 @@ resource appService 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: appServicePlan.id
     siteConfig: {
-      linuxFxVersion: 'DOTNETCORE|8.0'
+      netFrameworkVersion: 'v8.0'
       healthCheckPath: '/health'
     }
     httpsOnly: true

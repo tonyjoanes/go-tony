@@ -6,7 +6,7 @@ trigger:
 variables:
   resourceGroupName: 'demo-rg'
   location: 'uksouth'
-  azureSubscriptionId: '' # Set this in pipeline settings or replace with your subscription ID
+  azureSubscriptionId: '6b2914e3-c249-4fc5-9d67-be6d8abdbb66'
   appName: 'demo-myapi-dev'
   planName: 'demo-asp-dev'
   serviceConnection: 'MyAzureConnection'

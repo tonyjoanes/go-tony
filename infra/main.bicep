@@ -7,7 +7,7 @@ param planName string = 'demo-asp'
 @description('Name of the App Service')
 param appName string = 'demo-myapi'
 
-// ── App Service Plan ──────────────────────────────────────────────────────────
+// App Service Plan
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planName
   location: location
@@ -18,20 +18,19 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   properties: {}
 }
 
-// ── App Service ───────────────────────────────────────────────────────────────
+// App Service
 resource appService 'Microsoft.Web/sites@2023-12-01' = {
   name: appName
   location: location
   properties: {
     serverFarmId: appServicePlan.id
     siteConfig: {
-      netFrameworkVersion: 'v8.0'
       healthCheckPath: '/health'
     }
     httpsOnly: true
   }
 }
 
-// ── Outputs ───────────────────────────────────────────────────────────────────
+// Outputs
 output appServiceName string = appService.name
 output defaultHostname string = appService.properties.defaultHostName

@@ -1,5 +1,4 @@
 using './main.bicep'
 
-param location = 'eastus'
-param planName = 'demo-asp-dev'
+param location = 'uksouth'
 param appName  = 'demo-myapi-dev'

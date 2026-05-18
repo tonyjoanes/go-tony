@@ -1,40 +1,31 @@
 @description('Azure region for all resources')
 param location string = resourceGroup().location
 
-@description('Name of the App Service Plan')
-param planName string = 'demo-asp'
+@description('Name of the Container App')
+param appName string = 'demo-myapi-dev'
 
-@description('Name of the App Service')
-param appName string = 'demo-myapi'
+@description('Azure Container Registry name (globally unique, alphanumeric)')
+param acrName string = 'acr${uniqueString(resourceGroup().id)}'
 
-// App Service Plan
-resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
-  name: planName
+// Azure Container Registry (Basic SKU supports ACR Tasks for remote image builds)
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: acrName
   location: location
-  kind: 'linux'
   sku: {
-    name: 'B1'
-    tier: 'Basic'
+    name: 'Basic'
   }
   properties: {
-    reserved: true // required for Linux plans
+    adminUserEnabled: true
   }
 }
 
-// App Service
-resource appService 'Microsoft.Web/sites@2023-12-01' = {
-  name: appName
+// Container Apps Environment - Consumption plan, no VM quota required
+resource containerEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
+  name: '${appName}-env'
   location: location
-  properties: {
-    serverFarmId: appServicePlan.id
-    siteConfig: {
-      linuxFxVersion: 'DOTNETCORE|8.0'
-      healthCheckPath: '/health'
-    }
-    httpsOnly: true
-  }
+  properties: {}
 }
 
-// Outputs
-output appServiceName string = appService.name
-output defaultHostname string = appService.properties.defaultHostName
+output acrLoginServer string = acr.properties.loginServer
+output acrName string = acr.name
+output containerEnvName string = containerEnv.name

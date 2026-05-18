@@ -14,25 +14,30 @@ func main() {
 		appName       string
 		resourceGroup string
 		healthPath    string
+		directURL     string
 		timeout       time.Duration
 		interval      time.Duration
 	)
 
 	root := &cobra.Command{
 		Use:   "azhealthcheck",
-		Short: "Poll an Azure App Service health endpoint until it returns HTTP 200",
+		Short: "Poll a health endpoint until it returns HTTP 200",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if appName == "" {
-				return fmt.Errorf("--app-name is required")
+			url := directURL
+			if url == "" {
+				if appName == "" {
+					return fmt.Errorf("--url or --app-name is required")
+				}
+				url = fmt.Sprintf("https://%s.azurewebsites.net%s", appName, healthPath)
 			}
-			url := fmt.Sprintf("https://%s.azurewebsites.net%s", appName, healthPath)
 			return poll(url, timeout, interval)
 		},
 	}
 
-	root.Flags().StringVar(&appName, "app-name", "", "Azure App Service name (required)")
+	root.Flags().StringVar(&directURL, "url", "", "Full URL to poll (overrides --app-name)")
+	root.Flags().StringVar(&appName, "app-name", "", "Azure App Service name (used to construct URL if --url not set)")
 	root.Flags().StringVar(&resourceGroup, "resource-group", "", "Azure resource group (informational)")
-	root.Flags().StringVar(&healthPath, "health-path", "/health", "Path to poll on the App Service")
+	root.Flags().StringVar(&healthPath, "health-path", "/health", "Path appended to --app-name URL")
 	root.Flags().DurationVar(&timeout, "timeout", 3*time.Minute, "Total time before giving up")
 	root.Flags().DurationVar(&interval, "interval", 8*time.Second, "Time between poll attempts")
 

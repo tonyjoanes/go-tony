@@ -117,7 +117,7 @@ stages:
             displayName: 'Deploy API to App Service'
             inputs:
               azureSubscription: $(serviceConnection)
-              appType: webAppLinux
+              appType: webApp
               appName: $(appName)
               package: $(Pipeline.Workspace)/api/*.zip
 

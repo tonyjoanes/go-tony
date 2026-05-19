@@ -5,17 +5,16 @@ trigger:
 
 variables:
   resourceGroupName: 'demo-rg'
-  location: 'eastus'
-  azureSubscriptionId: '' # Set this in pipeline settings
+  location: 'uksouth'
+  azureSubscriptionId: '6b2914e3-c249-4fc5-9d67-be6d8abdbb66'
   appName: 'demo-myapi-dev'
-  planName: 'demo-asp-dev'
-  serviceConnection: 'your-azure-service-connection-name'
+  serviceConnection: 'MyAzureConnection'
 
 stages:
 
-# ── Stage 1: Build & publish .NET API ─────────────────────────────────────────
+# Stage 1: Validate .NET build
 - stage: Build
-  displayName: 'Build API'
+  displayName: 'Validate .NET Build'
   jobs:
   - job: BuildApi
     pool:
@@ -34,21 +33,10 @@ stages:
         projects: 'src/MyApi/MyApi.csproj'
         arguments: '--configuration Release --no-restore'
 
-    - task: DotNetCoreCLI@2
-      displayName: 'Publish'
-      inputs:
-        command: publish
-        projects: 'src/MyApi/MyApi.csproj'
-        arguments: '--configuration Release --no-build --output $(Build.ArtifactStagingDirectory)/api'
-        zipAfterPublish: true
-
-    - publish: $(Build.ArtifactStagingDirectory)/api
-      artifact: api
-
-# ── Stage 2: Build Go health-check tool (parallel with Build) ─────────────────
+# Stage 2: Build Go health-check tool (parallel with Stage 1)
 - stage: BuildGoTool
   displayName: 'Build Go Tool'
-  dependsOn: [] # Runs in parallel with Build stage
+  dependsOn: []
   jobs:
   - job: BuildGo
     pool:
@@ -68,17 +56,25 @@ stages:
     - publish: $(Build.ArtifactStagingDirectory)/azhealthcheck
       artifact: azhealthcheck
 
-# ── Stage 3: Deploy Bicep infra ───────────────────────────────────────────────
-- stage: Infra
-  displayName: 'Deploy Infrastructure'
-  dependsOn: Build
+# Stage 3: Deploy infra, build & push image, deploy Container App, health check
+- stage: Deploy
+  displayName: 'Deploy & Health Check'
+  dependsOn:
+    - Build
+    - BuildGoTool
   jobs:
-  - job: DeployBicep
+  - job: DeployApp
     pool:
       vmImage: ubuntu-latest
     steps:
+    - checkout: self
+
+    - download: current
+      artifact: azhealthcheck
+
+    # Deploy Bicep: creates ACR + Container Apps Environment
     - task: AzureResourceManagerTemplateDeployment@3
-      displayName: 'Deploy Bicep'
+      displayName: 'Deploy Bicep (ACR + Container Apps Environment)'
       inputs:
         deploymentScope: 'Resource Group'
         azureResourceManagerConnection: $(serviceConnection)
@@ -88,49 +84,97 @@ stages:
         location: $(location)
         templateLocation: 'Linked artifact'
         csmFile: 'infra/main.bicep'
-        overrideParameters: >
-          -appName $(appName)
-          -planName $(planName)
-          -location $(location)
+        overrideParameters: -appName $(appName) -location $(location)
         deploymentMode: 'Incremental'
+        deploymentOutputs: bicepOutputs
 
-# ── Stage 4: Deploy app & run health check ────────────────────────────────────
-- stage: DeployAndCheck
-  displayName: 'Deploy App & Health Check'
-  dependsOn:
-    - Build
-    - Infra
-    - BuildGoTool
-  jobs:
-  - deployment: DeployAndHealthCheck
-    pool:
-      vmImage: ubuntu-latest
-    environment: 'azure-demo'
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - download: current
-            artifact: api
+    # Extract ACR name and login server from Bicep outputs
+    - task: AzureCLI@2
+      displayName: 'Parse Bicep outputs'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          ACR_NAME=$(echo '$(bicepOutputs)' | jq -r '.acrName.value')
+          ACR_SERVER=$(echo '$(bicepOutputs)' | jq -r '.acrLoginServer.value')
+          echo "##vso[task.setvariable variable=acrName]$ACR_NAME"
+          echo "##vso[task.setvariable variable=acrLoginServer]$ACR_SERVER"
+          echo "ACR name:   $ACR_NAME"
+          echo "ACR server: $ACR_SERVER"
 
-          - task: AzureWebApp@1
-            displayName: 'Deploy API to App Service'
-            inputs:
-              azureSubscription: $(serviceConnection)
-              appType: webApp
-              appName: $(appName)
-              package: $(Pipeline.Workspace)/api/*.zip
+    # Build and push image using ACR Tasks (runs the Docker build in Azure, no local daemon needed)
+    - task: AzureCLI@2
+      displayName: 'Build and push image (ACR Tasks)'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az acr build \
+            --registry $(acrName) \
+            --image myapi:$(Build.BuildId) \
+            --file src/MyApi/Dockerfile \
+            .
 
-          - download: current
-            artifact: azhealthcheck
+    # Create Container App on first run, update image on subsequent runs
+    - task: AzureCLI@2
+      displayName: 'Deploy Container App'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          ACR_USERNAME=$(az acr credential show --name $(acrName) --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
+          IMAGE="$(acrLoginServer)/myapi:$(Build.BuildId)"
 
-          - script: |
-              chmod +x $(Pipeline.Workspace)/azhealthcheck/azhealthcheck
-              $(Pipeline.Workspace)/azhealthcheck/azhealthcheck \
-                --app-name $(appName) \
-                --resource-group $(resourceGroupName) \
-                --health-path /health \
-                --timeout 5m \
-                --interval 10s
-            displayName: 'Run health check'
-            timeoutInMinutes: 6
+          if az containerapp show \
+              --name $(appName) \
+              --resource-group $(resourceGroupName) &>/dev/null; then
+            echo "Updating existing Container App..."
+            az containerapp registry set \
+              --name $(appName) \
+              --resource-group $(resourceGroupName) \
+              --server $(acrLoginServer) \
+              --username "$ACR_USERNAME" \
+              --password "$ACR_PASSWORD"
+            az containerapp update \
+              --name $(appName) \
+              --resource-group $(resourceGroupName) \
+              --image "$IMAGE"
+          else
+            echo "Creating Container App..."
+            az containerapp create \
+              --name $(appName) \
+              --resource-group $(resourceGroupName) \
+              --environment $(appName)-env \
+              --image "$IMAGE" \
+              --target-port 8080 \
+              --ingress external \
+              --registry-server $(acrLoginServer) \
+              --registry-username "$ACR_USERNAME" \
+              --registry-password "$ACR_PASSWORD" \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --min-replicas 1 \
+              --max-replicas 1
+          fi
+
+          FQDN=$(az containerapp show \
+            --name $(appName) \
+            --resource-group $(resourceGroupName) \
+            --query "properties.configuration.ingress.fqdn" \
+            -o tsv)
+          echo "Container App FQDN: $FQDN"
+          echo "##vso[task.setvariable variable=containerAppFqdn]$FQDN"
+
+    # Run the Go health check against the Container App URL
+    - script: |
+        chmod +x $(Pipeline.Workspace)/azhealthcheck/azhealthcheck
+        $(Pipeline.Workspace)/azhealthcheck/azhealthcheck \
+          --url "https://$(containerAppFqdn)/health" \
+          --timeout 5m \
+          --interval 10s
+      displayName: 'Run health check'
+      timeoutInMinutes: 6

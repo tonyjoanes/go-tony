@@ -2,6 +2,9 @@
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
 # Binaries for programs and plugins
+tools/azhealthcheck/azhealthcheck
+tools/azcleanup/azcleanup
+tools/healthcheck-mcp/healthcheck-mcp
 *.exe
 *.exe~
 *.dll

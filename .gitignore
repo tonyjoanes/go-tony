@@ -5,6 +5,7 @@
 tools/azhealthcheck/azhealthcheck
 tools/azcleanup/azcleanup
 tools/healthcheck-mcp/healthcheck-mcp
+tools/adodiag/adodiag
 *.exe
 *.exe~
 *.dll
